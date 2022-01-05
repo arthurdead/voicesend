@@ -1,0 +1,24 @@
+"Games"
+{
+	"#default"
+	{
+		"#supported"
+		{
+			"game" "tf"
+		}
+
+		"Signatures"
+		{
+			"SV_BroadcastVoiceData"
+			{
+				"library" "engine"
+				"linux" "@_Z21SV_BroadcastVoiceDataP7IClientiPcx"
+			}
+			"SV_WriteVoiceCodec"
+			{
+				"library" "engine"
+				"linux" "@_Z18SV_WriteVoiceCodecR8bf_write"
+			}
+		}
+	}
+}
