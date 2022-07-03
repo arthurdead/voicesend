@@ -5,19 +5,6 @@
 
 #define VOICESEND_NOSENDER -500
 
-methodmap VoiceServer < Handle
-{
-	public native VoiceServer(const char[] addr, int port);
-
-	public native void SetSettings(int samplerate, int framesize, int packetsize);
-
-	property float Volume
-	{
-		public native get();
-		public native set(float value);
-	}
-}
-
 methodmap VoiceCodec < Handle
 {
 	public native bool Init(int quality);
@@ -40,10 +27,8 @@ stock VoiceCodec CreateCeltCodec(int quality = -1)
 
 native VoiceCodec CreateCeltCodecEx(int samplerate, int framesize, int packetsize);
 
-forward void OnVoiceServerData(VoiceServer server, const char[] uncompressed, int SamplesPerFrame, int PacketSize);
-
 forward void OnVoiceInit(char[] codec, int length, int &samplerate);
-forward void OnVoiceData(int &client, char[] data, int &length);
+forward void OnVoiceData(int sender, int client, char[] data, int length, bool &proximity);
 
 native void SendVoiceInit(int client, const char[] codec, int samplerate);
 

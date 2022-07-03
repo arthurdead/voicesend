@@ -56,11 +56,11 @@ ICvar *g_pCVar;
 IServer *sv;
 ConVar *sv_voicecodec;
 ConVar *sv_use_steam_voice;
+ConVar *sv_voiceenable;
+ConVar *voice_debugfeedbackfrom;
 HandleType_t voicecodec_handle;
-HandleType_t voiceserver_handle;
 IForward *OnVoiceInit;
 IForward *OnVoiceData;
-IForward *OnVoiceServerData;
 struct codecdl
 {
 	CSysModule *dl;
@@ -98,6 +98,8 @@ static void clamp_samplerate(int &nSampleRate)
 		nSampleRate = 22050;
 	} else if(nSampleRate >= 11025) {
 		nSampleRate = 11025;
+	} else if(nSampleRate == 0) {
+		nSampleRate = 0;
 	} else if(nSampleRate < 11025) {
 		nSampleRate = 11025;
 	}
@@ -145,15 +147,60 @@ static cell_t SendVoiceInit(IPluginContext *pContext, const cell_t *params)
 CDetour *SV_BroadcastVoiceData_detour;
 DETOUR_DECL_STATIC4(SV_BroadcastVoiceData, void, IClient *, pClient, int, nBytes, char *, data, int64, xuid)
 {
-	cell_t index{pClient->GetPlayerSlot()+1};
-	OnVoiceData->PushCellByRef(&index);
-	OnVoiceData->PushStringEx(data, nBytes, SM_PARAM_STRING_COPY|SM_PARAM_STRING_BINARY, SM_PARAM_COPYBACK);
-	OnVoiceData->PushCellByRef(reinterpret_cast<cell_t *>(&nBytes));
-	OnVoiceData->Execute();
+	// Disable voice?
+	if( !sv_voiceenable->GetInt() )
+		return;
 
-	pClient = sv->GetClient(index-1);
+	// Build voice message once
+	SVC_VoiceData voiceData;
+	voiceData.m_nFromClient = pClient->GetPlayerSlot();
+	voiceData.m_nLength = nBytes * 8;	// length in bits
+	voiceData.m_DataOut = data;
+	voiceData.m_xuid = xuid;
 
-	DETOUR_STATIC_CALL(SV_BroadcastVoiceData)(pClient, nBytes, data, xuid);
+	if ( voice_debugfeedbackfrom->GetBool() )
+	{
+		Msg( "Sending voice from: %s - playerslot: %d\n", pClient->GetClientName(), pClient->GetPlayerSlot() + 1 );
+	}
+
+	for(int i=0; i < sv->GetClientCount(); i++)
+	{
+		IClient *pDestClient = sv->GetClient(i);
+		if(!pDestClient->IsActive()) {
+			continue;
+		}
+
+		voiceData.m_nFromClient = pClient->GetPlayerSlot();
+
+		bool bSelf = (pDestClient == pClient);
+		bool bHearsPlayer = pDestClient->IsHearingClient(voiceData.m_nFromClient);
+
+		if(!bHearsPlayer && !bSelf) {
+			continue;
+		}
+
+		cell_t sender{pClient->GetPlayerSlot()+1};
+		cell_t proximity{pDestClient->IsProximityHearingClient(voiceData.m_nFromClient)};
+
+		voiceData.m_bProximity = proximity;
+
+		OnVoiceData->PushCell(sender);
+		OnVoiceData->PushCell(i+1);
+		OnVoiceData->PushStringEx(data, nBytes, SM_PARAM_STRING_COPY|SM_PARAM_STRING_BINARY, SM_PARAM_COPYBACK);
+		OnVoiceData->PushCell(nBytes);
+		OnVoiceData->PushCellByRef(&proximity);
+		OnVoiceData->Execute(nullptr);
+
+		voiceData.m_bProximity = proximity;
+
+		if(!bHearsPlayer) {
+			voiceData.m_nLength = 0;
+		} else {
+			voiceData.m_nLength = nBytes * 8;
+		}
+
+		pDestClient->SendNetMsg( voiceData );
+	}
 }
 
 static cell_t SendVoiceData(IPluginContext *pContext, const cell_t *params)
@@ -334,69 +381,6 @@ static cell_t VoiceCodecDecompress(IPluginContext *pContext, const cell_t *param
 	return -1;
 }
 
-static cell_t VoiceServerVoiceServer(IPluginContext *pContext, const cell_t *params)
-{
-	char *addr_ptr;
-	pContext->LocalToString(params[1], &addr_ptr);
-	std::string addr{addr_ptr};
-	int port = params[2];
-
-	VoiceServer *server{new VoiceServer{std::move(addr), port}};
-	server->handle = handlesys->CreateHandle(voiceserver_handle, server, pContext->GetIdentity(), myself->GetIdentity(), NULL);
-
-	return server->handle;
-}
-
-static cell_t VoiceServerSetSettings(IPluginContext *pContext, const cell_t *params)
-{
-	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
-
-	VoiceServer *obj = nullptr;
-	HandleError err = handlesys->ReadHandle(params[1], voiceserver_handle, &security, (void **)&obj);
-	if(err != HandleError_None)
-	{
-		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
-	}
-
-	int samplerate = params[2];
-	int framesize = params[3];
-	int packetsize = params[4];
-
-	obj->SetSettings(samplerate, framesize, packetsize);
-
-	return 0;
-}
-
-static cell_t VoiceServerVolumeget(IPluginContext *pContext, const cell_t *params)
-{
-	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
-
-	VoiceServer *obj = nullptr;
-	HandleError err = handlesys->ReadHandle(params[1], voiceserver_handle, &security, (void **)&obj);
-	if(err != HandleError_None)
-	{
-		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
-	}
-
-	return sp_ftoc(obj->volume);
-}
-
-static cell_t VoiceServerVolumeset(IPluginContext *pContext, const cell_t *params)
-{
-	HandleSecurity security(pContext->GetIdentity(), myself->GetIdentity());
-
-	VoiceServer *obj = nullptr;
-	HandleError err = handlesys->ReadHandle(params[1], voiceserver_handle, &security, (void **)&obj);
-	if(err != HandleError_None)
-	{
-		return pContext->ThrowNativeError("Invalid Handle %x (error: %d)", params[1], err);
-	}
-
-	obj->volume = sp_ctof(params[2]);
-
-	return 0;
-}
-
 static constexpr const sp_nativeinfo_t natives[]{
 	{"SendVoiceData", SendVoiceData},
 	{"SendVoiceInit", SendVoiceInit},
@@ -407,10 +391,6 @@ static constexpr const sp_nativeinfo_t natives[]{
 	{"VoiceCodec.Compress", VoiceCodecCompress},
 	{"VoiceCodec.Decompress", VoiceCodecDecompress},
 	{"VoiceCodec.ResetState", VoiceCodecResetState},
-	{"VoiceServer.VoiceServer", VoiceServerVoiceServer},
-	{"VoiceServer.SetSettings", VoiceServerSetSettings},
-	{"VoiceServer.Volume.get", VoiceServerVolumeget},
-	{"VoiceServer.Volume.set", VoiceServerVolumeset},
 	{nullptr, nullptr}
 };
 
@@ -420,15 +400,12 @@ void Sample::OnHandleDestroy(HandleType_t type, void *object)
 		IVoiceCodec *codec{reinterpret_cast<IVoiceCodec *>(object)};
 		codec->ResetState();
 		codec->Release();
-	} else if(type == voiceserver_handle) {
-		VoiceServer *server{reinterpret_cast<VoiceServer *>(object)};
-		delete server;
 	}
 }
 
 void OnGameFrame(bool simulating)
 {
-	VoiceServer::OnGameFrame(simulating);
+	
 }
 
 bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
@@ -447,11 +424,9 @@ bool Sample::SDK_OnLoad(char *error, size_t maxlen, bool late)
 	gameconfs->CloseGameConfigFile(gameconf);
 
 	voicecodec_handle = handlesys->CreateType("VoiceCodec", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
-	voiceserver_handle = handlesys->CreateType("VoiceServer", this, 0, nullptr, nullptr, myself->GetIdentity(), nullptr);
 
 	OnVoiceInit = forwards->CreateForward("OnVoiceInit", ET_Event, 3, nullptr, Param_String, Param_Cell, Param_CellByRef);
 	OnVoiceData = forwards->CreateForward("OnVoiceData", ET_Event, 3, nullptr, Param_CellByRef, Param_String, Param_CellByRef);
-	OnVoiceServerData = forwards->CreateForward("OnVoiceServerData", ET_Event, 4, nullptr, Param_Cell, Param_String, Param_Cell, Param_Cell);
 
 	VoiceCodec_Celt::InitGlobalSettings();
 	smutils->AddGameFrameHook(::OnGameFrame);
@@ -470,9 +445,7 @@ void Sample::SDK_OnUnload()
 	}
 	forwards->ReleaseForward(OnVoiceInit);
 	forwards->ReleaseForward(OnVoiceData);
-	forwards->ReleaseForward(OnVoiceServerData);
 	handlesys->RemoveType(voicecodec_handle, myself->GetIdentity());
-	handlesys->RemoveType(voiceserver_handle, myself->GetIdentity());
 	SV_WriteVoiceCodec_detour->Destroy();
 	SV_BroadcastVoiceData_detour->Destroy();
 }
@@ -487,6 +460,8 @@ bool Sample::SDK_OnMetamodLoad(ISmmAPI *ismm, char *error, size_t maxlen, bool l
 	GET_V_IFACE_CURRENT(GetEngineFactory, g_pCVar, ICvar, CVAR_INTERFACE_VERSION);
 	sv_voicecodec = g_pCVar->FindVar("sv_voicecodec");
 	sv_use_steam_voice = g_pCVar->FindVar("sv_use_steam_voice");
+	sv_voiceenable = g_pCVar->FindVar("sv_voiceenable");
+	voice_debugfeedbackfrom = g_pCVar->FindVar("voice_debugfeedbackfrom");
 	sv = engine->GetIServer();
 	ConVar_Register(0, this);
 	return true;

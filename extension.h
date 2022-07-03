@@ -38,36 +38,7 @@
  */
 
 #include "smsdk_ext.h"
-#include "voiceserver.h"
 #include "voicecodec_celt.h"
-
-template <typename T>
-inline constexpr std::size_t cell_array_size_for_type(std::size_t len)
-{
-	return ((sizeof(T) * len) / sizeof(cell_t));
-}
-
-template <typename T>
-inline constexpr std::size_t type_array_size_from_cell(std::size_t len)
-{
-	return ((sizeof(cell_t) * len) / sizeof(T));
-}
-
-template <typename T>
-inline void to_cell_array(T *input_array, std::size_t input_len, cell_t *output_array, std::size_t output_len)
-{
-	for(std::size_t i{0}; i < input_len && i < output_len; ++i) {
-		output_array[i] = input_array[i];
-	}
-}
-
-template <typename T>
-inline void from_cell_array(cell_t *input_array, std::size_t input_len, T *output_array, std::size_t output_len)
-{
-	for(std::size_t i{0}; i < input_len && i < output_len; ++i) {
-		output_array[i] = input_array[i];
-	}
-}
 
 /**
  * @brief Sample implementation of the SDK Extension.
